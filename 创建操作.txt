@@ -1,0 +1,698 @@
+# 用 GitHub + Cloudflare Pages 搭建图片网站（无需 R2）
+
+图片直接放在 GitHub 仓库里，通过 Cloudflare Pages 部署。
+
+---
+
+## 限制说明
+
+```
+GitHub 仓库限制：
+  - 单个文件最大 100MB
+  - 仓库建议不超过 1GB（软限制，超过会收到警告）
+  - 超过 5GB 可能被限制
+
+应对策略：
+  - 上传前压缩图片（下面会教）
+  - 1000张图片，每张压缩到 300-500KB ≈ 300MB-500MB，完全没问题
+```
+
+---
+
+## 第一步：安装必要工具
+
+### 1.1 安装 Git
+
+1. 打开 [git-scm.com/download/win](https://git-scm.com/download/win)
+2. 下载 64-bit 版本
+3. 安装时**全部默认 Next**即可
+
+验证：
+```powershell
+# 打开 PowerShell
+git --version
+# 显示 git version 2.x.x 就行
+```
+
+### 1.2 安装 Python（用于压缩图片和生成索引）
+
+1. 打开 [python.org/downloads](https://www.python.org/downloads/)
+2. 下载最新版，点安装
+3. **⚠️ 安装界面底部勾选 "Add Python to PATH"**，然后点 Install
+
+验证：
+```powershell
+python --version
+# 显示 Python 3.x.x
+```
+
+安装图片处理库：
+```powershell
+pip install Pillow
+```
+
+### 1.3 配置 Git 身份
+
+```powershell
+git config --global user.name "你的GitHub用户名"
+git config --global user.email "你的邮箱"
+```
+
+---
+
+## 第二步：创建项目文件夹
+
+在你电脑上任意位置创建如下结构：
+
+```
+C:\MyGallery\
+├── images\                  ← 把所有原始图片丢进来
+│   ├── photo001.jpg
+│   ├── photo002.png
+│   └── ...
+├── site\                    ← 网站代码（会推送到 GitHub）
+│   ├── index.html
+│   ├── style.css
+│   ├── app.js
+│   └── images\              ← 压缩后的图片会放这里
+├── compress.py              ← 压缩脚本
+└── generate_index.py        ← 生成索引脚本
+```
+
+PowerShell 中创建：
+```powershell
+mkdir C:\MyGallery
+mkdir C:\MyGallery\images
+mkdir C:\MyGallery\site
+mkdir C:\MyGallery\site\images
+cd C:\MyGallery
+```
+
+---
+
+## 第三步：创建压缩脚本
+
+图片必须压缩，不然仓库很快就超限。
+
+### `compress.py`
+
+在 `C:\MyGallery\` 下创建这个文件：
+
+```python
+"""
+compress.py
+把 images/ 里的原图压缩后输出到 site/images/
+自动缩放 + 转WebP + 大幅减小体积
+"""
+
+from PIL import Image
+from pathlib import Path
+import sys
+
+INPUT_DIR = Path("./images")         # 原始图片
+OUTPUT_DIR = Path("./site/images")   # 压缩后的图片
+MAX_LONG_SIDE = 2000                 # 最长边不超过2000像素
+WEBP_QUALITY = 80                    # WebP质量 (1-100)
+EXTENSIONS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.tiff'}
+
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# 统计已有文件，跳过已处理的
+existing = {f.stem for f in OUTPUT_DIR.iterdir()}
+
+files = sorted([
+    f for f in INPUT_DIR.iterdir()
+    if f.suffix.lower() in EXTENSIONS
+])
+
+if not files:
+    print(f"❌ 在 {INPUT_DIR} 中没有找到图片")
+    sys.exit(1)
+
+new_count = 0
+skip_count = 0
+total_original = 0
+total_compressed = 0
+
+for f in files:
+    out_name = f.stem + ".webp"
+    out_path = OUTPUT_DIR / out_name
+
+    # 跳过已存在的
+    if f.stem in existing:
+        skip_count += 1
+        continue
+
+    try:
+        img = Image.open(f)
+
+        # 转为 RGB（处理 RGBA 的 PNG）
+        if img.mode in ('RGBA', 'P'):
+            img = img.convert('RGB')
+
+        # 等比缩放
+        w, h = img.size
+        long_side = max(w, h)
+        if long_side > MAX_LONG_SIDE:
+            ratio = MAX_LONG_SIDE / long_side
+            new_w = int(w * ratio)
+            new_h = int(h * ratio)
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+
+        # 保存为 WebP
+        img.save(out_path, 'WEBP', quality=WEBP_QUALITY)
+
+        original_size = f.stat().st_size
+        compressed_size = out_path.stat().st_size
+        total_original += original_size
+        total_compressed += compressed_size
+        ratio_pct = (1 - compressed_size / original_size) * 100
+
+        print(f"✅ {f.name} → {out_name}  "
+              f"({original_size//1024}KB → {compressed_size//1024}KB, "
+              f"节省 {ratio_pct:.0f}%)")
+        new_count += 1
+
+    except Exception as e:
+        print(f"❌ {f.name} 处理失败: {e}")
+
+print(f"\n{'='*50}")
+print(f"新压缩: {new_count} 张")
+print(f"已跳过: {skip_count} 张")
+print(f"总计:   {new_count + skip_count} 张")
+if total_original > 0:
+    print(f"原始大小: {total_original/1024/1024:.1f} MB")
+    print(f"压缩后:   {total_compressed/1024/1024:.1f} MB")
+    print(f"总节省:   {(1-total_compressed/total_original)*100:.0f}%")
+print(f"{'='*50}")
+```
+
+---
+
+## 第四步：创建索引生成脚本
+
+### `generate_index.py`
+
+```python
+"""
+generate_index.py
+扫描 site/images/ 生成 images.json
+"""
+
+import json
+from pathlib import Path
+
+IMAGE_DIR = Path("./site/images")
+OUTPUT = Path("./site/images.json")
+
+images = sorted([
+    {"filename": f.name, "url": f"images/{f.name}"}
+    for f in IMAGE_DIR.iterdir()
+    if f.suffix.lower() in {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif'}
+])
+
+OUTPUT.write_text(json.dumps(images, indent=2, ensure_ascii=False), encoding='utf-8')
+
+print(f"✅ 已生成 {OUTPUT}，共 {len(images)} 张图片")
+```
+
+---
+
+## 第五步：创建网站文件
+
+### `site/index.html`
+
+```html
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>我的图片库</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <h1>📷 我的图片库</h1>
+        <div class="controls">
+            <input type="text" id="search" placeholder="搜索...">
+            <span id="count">加载中...</span>
+        </div>
+    </header>
+
+    <div class="gallery" id="gallery"></div>
+    <div id="sentinel"></div>
+    <div id="loading" class="loading">加载中...</div>
+
+    <div class="lightbox" id="lightbox">
+        <button class="lb-close" onclick="closeLightbox()">✕</button>
+        <button class="lb-prev" onclick="navigate(-1)">‹</button>
+        <button class="lb-next" onclick="navigate(1)">›</button>
+        <img id="lb-img" src="" alt="">
+        <div class="lb-info" id="lb-info"></div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
+```
+
+### `site/style.css`
+
+```css
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    background: #0d1117;
+    color: #e6edf3;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    min-height: 100vh;
+}
+
+header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(13, 17, 23, 0.92);
+    backdrop-filter: blur(12px);
+    padding: 14px 20px;
+    border-bottom: 1px solid #21262d;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+header h1 { font-size: 1.3rem; }
+
+.controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+#search {
+    background: #161b22;
+    border: 1px solid #30363d;
+    color: #e6edf3;
+    padding: 7px 14px;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    width: 200px;
+    outline: none;
+}
+
+#search:focus { border-color: #58a6ff; }
+
+#count {
+    color: #8b949e;
+    font-size: 0.85rem;
+    white-space: nowrap;
+}
+
+/* 瀑布流 */
+.gallery {
+    columns: 5;
+    column-gap: 8px;
+    padding: 12px;
+    max-width: 1600px;
+    margin: 0 auto;
+}
+
+.gallery-item {
+    break-inside: avoid;
+    margin-bottom: 8px;
+    border-radius: 6px;
+    overflow: hidden;
+    cursor: pointer;
+    background: #161b22;
+    transition: transform 0.2s;
+}
+
+.gallery-item:hover { transform: scale(1.02); }
+
+.gallery-item img {
+    width: 100%;
+    display: block;
+    opacity: 0;
+    transition: opacity 0.4s;
+}
+
+.gallery-item img.loaded { opacity: 1; }
+
+.gallery-item .ph {
+    width: 100%;
+    aspect-ratio: 4/3;
+    background: #161b22;
+    animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 0.7; }
+}
+
+@media (max-width: 1400px) { .gallery { columns: 4; } }
+@media (max-width: 1000px) { .gallery { columns: 3; } }
+@media (max-width: 700px)  { .gallery { columns: 2; column-gap: 6px; padding: 8px; } }
+
+#sentinel { height: 1px; }
+.loading { text-align: center; padding: 20px; color: #8b949e; display: none; }
+.loading.show { display: block; }
+
+/* 灯箱 */
+.lightbox {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.95);
+    z-index: 1000;
+    justify-content: center;
+    align-items: center;
+}
+
+.lightbox.open { display: flex; }
+
+.lightbox img {
+    max-width: 92vw;
+    max-height: 90vh;
+    object-fit: contain;
+}
+
+.lb-close, .lb-prev, .lb-next {
+    position: absolute;
+    background: rgba(255,255,255,0.1);
+    border: none;
+    color: #fff;
+    cursor: pointer;
+    border-radius: 50%;
+    width: 44px; height: 44px;
+    font-size: 1.4rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+}
+
+.lb-close:hover, .lb-prev:hover, .lb-next:hover {
+    background: rgba(255,255,255,0.25);
+}
+
+.lb-close { top: 16px; right: 16px; }
+.lb-prev { left: 16px; top: 50%; transform: translateY(-50%); font-size: 2rem; }
+.lb-next { right: 16px; top: 50%; transform: translateY(-50%); font-size: 2rem; }
+
+.lb-info {
+    position: absolute;
+    bottom: 20px;
+    color: #8b949e;
+    font-size: 0.85rem;
+}
+```
+
+### `site/app.js`
+
+```javascript
+let allImages = [];
+let filtered = [];
+let loaded = 0;
+let lbIndex = -1;
+const BATCH = 40;
+
+async function init() {
+    const res = await fetch('images.json');
+    allImages = await res.json();
+    filtered = [...allImages];
+    updateCount();
+    loadMore();
+
+    // 无限滚动
+    new IntersectionObserver(entries => {
+        if (entries[0].isIntersecting) loadMore();
+    }, { rootMargin: '400px' }).observe(document.getElementById('sentinel'));
+
+    // 搜索
+    let timer;
+    document.getElementById('search').addEventListener('input', e => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+            const q = e.target.value.trim().toLowerCase();
+            filtered = q
+                ? allImages.filter(img => img.filename.toLowerCase().includes(q))
+                : [...allImages];
+            document.getElementById('gallery').innerHTML = '';
+            loaded = 0;
+            loadMore();
+        }, 300);
+    });
+
+    // 键盘
+    document.addEventListener('keydown', e => {
+        if (lbIndex < 0) return;
+        if (e.key === 'Escape') closeLightbox();
+        if (e.key === 'ArrowLeft') navigate(-1);
+        if (e.key === 'ArrowRight') navigate(1);
+    });
+
+    // 触摸滑动
+    let touchStartX = 0;
+    const lb = document.getElementById('lightbox');
+    lb.addEventListener('touchstart', e => { touchStartX = e.touches[0].clientX; });
+    lb.addEventListener('touchend', e => {
+        const diff = e.changedTouches[0].clientX - touchStartX;
+        if (Math.abs(diff) > 50) navigate(diff > 0 ? -1 : 1);
+    });
+}
+
+function loadMore() {
+    if (loaded >= filtered.length) return;
+    const gallery = document.getElementById('gallery');
+    const end = Math.min(loaded + BATCH, filtered.length);
+
+    for (let i = loaded; i < end; i++) {
+        const img = filtered[i];
+        const item = document.createElement('div');
+        item.className = 'gallery-item';
+        item.innerHTML = `<div class="ph"></div><img data-src="${img.url}" alt="${img.filename}" loading="lazy">`;
+
+        const imgEl = item.querySelector('img');
+        const ph = item.querySelector('.ph');
+
+        new IntersectionObserver((entries, obs) => {
+            if (entries[0].isIntersecting) {
+                imgEl.src = imgEl.dataset.src;
+                imgEl.onload = () => { imgEl.classList.add('loaded'); ph.remove(); };
+                imgEl.onerror = () => { item.remove(); };
+                obs.unobserve(item);
+            }
+        }, { rootMargin: '200px' }).observe(item);
+
+        const idx = i;
+        item.addEventListener('click', () => openLightbox(idx));
+        gallery.appendChild(item);
+    }
+
+    loaded = end;
+    updateCount();
+}
+
+function openLightbox(i) {
+    lbIndex = i;
+    document.getElementById('lb-img').src = filtered[i].url;
+    document.getElementById('lb-info').textContent =
+        `${filtered[i].filename}  ·  ${i + 1} / ${filtered.length}`;
+    document.getElementById('lightbox').classList.add('open');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeLightbox() {
+    document.getElementById('lightbox').classList.remove('open');
+    document.body.style.overflow = '';
+    lbIndex = -1;
+}
+
+function navigate(dir) {
+    if (lbIndex < 0) return;
+    let n = lbIndex + dir;
+    if (n < 0) n = filtered.length - 1;
+    if (n >= filtered.length) n = 0;
+    openLightbox(n);
+}
+
+function updateCount() {
+    document.getElementById('count').textContent =
+        `${Math.min(loaded, filtered.length)} / ${filtered.length} 张`;
+}
+
+init();
+```
+
+---
+
+## 第六步：执行压缩和生成索引
+
+```powershell
+cd C:\MyGallery
+
+# 1. 先把你所有图片放进 images\ 文件夹
+
+# 2. 压缩图片（输出到 site\images\）
+python compress.py
+
+# 3. 生成索引
+python generate_index.py
+```
+
+运行后确认 `site\` 文件夹结构：
+```
+site\
+├── index.html
+├── style.css
+├── app.js
+├── images.json         ← 自动生成
+└── images\             ← 压缩后的图片
+    ├── photo001.webp
+    ├── photo002.webp
+    └── ...
+```
+
+---
+
+## 第七步：推送到 GitHub
+
+### 7.1 在 GitHub 上创建仓库
+
+1. 打开 [github.com/new](https://github.com/new)
+2. 仓库名：`my-gallery`
+3. 选 **Public** 或 **Private** 都行
+4. **不要**勾选 README、.gitignore 等
+5. 点 **Create repository**
+
+### 7.2 推送代码
+
+```powershell
+cd C:\MyGallery\site
+
+git init
+git add .
+git commit -m "初始化图片画廊"
+git remote add origin https://github.com/你的用户名/my-gallery.git
+git branch -M main
+git push -u origin main
+```
+
+> 第一次 push 会弹出 GitHub 登录窗口，登录你的 GitHub 账号即可。
+
+---
+
+## 第八步：部署到 Cloudflare Pages
+
+```
+1. 登录 dash.cloudflare.com
+2. 左侧菜单 → 「Workers 和 Pages」
+3. 点击 「创建」
+4. 选择 「Pages」 标签
+5. 点击 「连接到 Git」(Connect to Git)
+6. 授权 Cloudflare 访问你的 GitHub
+7. 选择仓库 「my-gallery」
+8. 配置:
+   - 项目名称: my-gallery（会生成 my-gallery.pages.dev）
+   - 生产分支: main
+   - 构建命令: （留空）
+   - 构建输出目录: （留空，或填 /）
+9. 点击 「保存并部署」
+10. 等待部署完成（通常30秒-1分钟）
+```
+
+部署完成后访问：
+```
+https://my-gallery.pages.dev
+```
+
+---
+
+## 第九步：日后添加新图片
+
+每次有新图片，完整流程：
+
+```powershell
+cd C:\MyGallery
+
+# 1. 把新图片丢进 images\ 文件夹
+#    （直接拖进去就行，脚本会自动跳过已处理的）
+
+# 2. 压缩新图片
+python compress.py
+
+# 3. 重新生成索引
+python generate_index.py
+
+# 4. 推送到 GitHub（Cloudflare 自动部署）
+cd site
+git add .
+git commit -m "添加新图片"
+git push
+```
+
+**大约1分钟后**，网站自动更新，新图片就能看到了。
+
+---
+
+## 一键操作脚本（可选）
+
+把上面的步骤合成一个脚本，以后双击就行。
+
+### `update.ps1`（放在 `C:\MyGallery\`）
+
+```powershell
+# update.ps1 - 一键：压缩 → 生成索引 → 推送
+# 双击运行 或 PowerShell 中 .\update.ps1
+
+Set-Location $PSScriptRoot
+
+Write-Host "`n===== 1/3 压缩图片 =====" -ForegroundColor Cyan
+python compress.py
+
+Write-Host "`n===== 2/3 生成索引 =====" -ForegroundColor Cyan
+python generate_index.py
+
+Write-Host "`n===== 3/3 推送到 GitHub =====" -ForegroundColor Cyan
+Set-Location site
+git add .
+
+$date = Get-Date -Format "yyyy-MM-dd HH:mm"
+git commit -m "更新图片 $date"
+git push
+
+Write-Host "`n✅ 全部完成! 等待约1分钟后网站自动更新" -ForegroundColor Green
+Write-Host "网站地址: https://my-gallery.pages.dev`n" -ForegroundColor Yellow
+Read-Host "按回车退出"
+```
+
+以后添加图片的流程就变成：
+```
+1. 把图片丢进 images\ 文件夹
+2. 双击 update.ps1
+3. 搞定
+```
+
+---
+
+## 操作清单
+
+```
+□  安装 Git（git-scm.com）
+□  安装 Python（python.org，记得勾选 Add to PATH）
+□  PowerShell 运行: pip install Pillow
+□  创建文件夹 C:\MyGallery\images\ 和 C:\MyGallery\site\
+□  创建 compress.py、generate_index.py
+□  创建 site\index.html、style.css、app.js
+□  把图片放进 images\
+□  运行 python compress.py
+□  运行 python generate_index.py
+□  GitHub 创建仓库 my-gallery
+□  cd site → git init → git add . → git commit → git push
+□  Cloudflare Pages 连接 GitHub 仓库并部署
+□  访问 https://my-gallery.pages.dev 确认 🎉
+```
