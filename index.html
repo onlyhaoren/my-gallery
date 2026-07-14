@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>我的图片库</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <header>
+        <h1>📷 我的图片库</h1>
+        <div class="controls">
+            <input type="text" id="search" placeholder="搜索...">
+            <span id="count">加载中...</span>
+        </div>
+    </header>
+
+    <div class="gallery" id="gallery"></div>
+    <div id="sentinel"></div>
+    <div id="loading" class="loading">加载中...</div>
+
+    <div class="lightbox" id="lightbox">
+        <button class="lb-close" onclick="closeLightbox()">✕</button>
+        <button class="lb-prev" onclick="navigate(-1)">‹</button>
+        <button class="lb-next" onclick="navigate(1)">›</button>
+        <img id="lb-img" src="" alt="">
+        <div class="lb-info" id="lb-info"></div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

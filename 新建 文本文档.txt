@@ -1,0 +1,126 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: #0d1117;
+    color: #e6edf3;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    min-height: 100vh;
+}
+header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(13, 17, 23, 0.92);
+    backdrop-filter: blur(12px);
+    padding: 14px 20px;
+    border-bottom: 1px solid #21262d;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+header h1 { font-size: 1.3rem; }
+.controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+#search {
+    background: #161b22;
+    border: 1px solid #30363d;
+    color: #e6edf3;
+    padding: 7px 14px;
+    border-radius: 6px;
+    font-size: 0.9rem;
+    width: 200px;
+    outline: none;
+}
+#search:focus { border-color: #58a6ff; }
+#count {
+    color: #8b949e;
+    font-size: 0.85rem;
+    white-space: nowrap;
+}
+/* 瀑布流 */
+.gallery {
+    columns: 5;
+    column-gap: 8px;
+    padding: 12px;
+    max-width: 1600px;
+    margin: 0 auto;
+}
+.gallery-item {
+    break-inside: avoid;
+    margin-bottom: 8px;
+    border-radius: 6px;
+    overflow: hidden;
+    cursor: pointer;
+    background: #161b22;
+    transition: transform 0.2s;
+}
+.gallery-item:hover { transform: scale(1.02); }
+.gallery-item img {
+    width: 100%;
+    display: block;
+    opacity: 0;
+    transition: opacity 0.4s;
+}
+.gallery-item img.loaded { opacity: 1; }
+.gallery-item .ph {
+    width: 100%;
+    aspect-ratio: 4/3;
+    background: #161b22;
+    animation: pulse 1.5s ease-in-out infinite;
+}
+@keyframes pulse {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 0.7; }
+}
+@media (max-width: 1400px) { .gallery { columns: 4; } }
+@media (max-width: 1000px) { .gallery { columns: 3; } }
+@media (max-width: 700px)  { .gallery { columns: 2; column-gap: 6px; padding: 8px; } }
+#sentinel { height: 1px; }
+.loading { text-align: center; padding: 20px; color: #8b949e; display: none; }
+.loading.show { display: block; }
+/* 灯箱 */
+.lightbox {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.95);
+    z-index: 1000;
+    justify-content: center;
+    align-items: center;
+}
+.lightbox.open { display: flex; }
+.lightbox img {
+    max-width: 92vw;
+    max-height: 90vh;
+    object-fit: contain;
+}
+.lb-close, .lb-prev, .lb-next {
+    position: absolute;
+    background: rgba(255,255,255,0.1);
+    border: none;
+    color: #fff;
+    cursor: pointer;
+    border-radius: 50%;
+    width: 44px; height: 44px;
+    font-size: 1.4rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+}
+.lb-close:hover, .lb-prev:hover, .lb-next:hover {
+    background: rgba(255,255,255,0.25);
+}
+.lb-close { top: 16px; right: 16px; }
+.lb-prev { left: 16px; top: 50%; transform: translateY(-50%); font-size: 2rem; }
+.lb-next { right: 16px; top: 50%; transform: translateY(-50%); font-size: 2rem; }
+.lb-info {
+    position: absolute;
+    bottom: 20px;
+    color: #8b949e;
+    font-size: 0.85rem;
+}
