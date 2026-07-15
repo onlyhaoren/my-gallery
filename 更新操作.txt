@@ -1,0 +1,6 @@
+# 1. 自动扫描所有修改（会自动忽略 raw_photos 等大图）
+git add .
+# 2. 提交修改，并写上你的更新说明（双引号里的内容可以随便改）
+git commit -m "更新：添加了3张新摄影作品，并优化了排版"
+# 3. 推送到 GitHub
+git push origin main

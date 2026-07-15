@@ -232,7 +232,9 @@ html_content = f"""<!DOCTYPE html>
         <h1>好人之家</h1>
         <div class="my-intro">
             <p>随便看看吧~</p>
-            <p><strong>点击下方按钮下载原图。</strong></p>
+            <p><strong>点击下方按钮下载原图。手机版点开然后下载。</strong></p>
+            <p>站点在国外，网络波动大，点开下载较慢，请耐心等待~</p>
+            <p>绝对不是因为想省钱才买的便宜站点！（心虚）</p>
         </div>
     </header>
 
