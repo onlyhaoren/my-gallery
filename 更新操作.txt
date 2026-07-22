@@ -4,3 +4,7 @@ git add .
 git commit -m "更新：添加了3张新摄影作品，并优化了排版"
 # 3. 推送到 GitHub
 git push origin main
+
+git add .
+git commit -m "更新"
+git push origin main
