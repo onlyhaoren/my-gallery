@@ -26,6 +26,7 @@ import html
 import shutil
 import argparse
 import datetime
+import urllib.parse
 from collections import Counter
 
 from PIL import Image, ImageOps
@@ -763,6 +764,26 @@ DOWNLOAD_ICON = (
     '<line x1="12" y1="15" x2="12" y2="3"></line></svg>'
 )
 
+# 内联 SVG 图标：不额外产生网络请求，也不新增文件
+FAVICON_SVG = (
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>"
+    "<defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>"
+    "<stop offset='0' stop-color='#3b82f6'/><stop offset='1' stop-color='#8b5cf6'/>"
+    "</linearGradient></defs>"
+    "<rect width='64' height='64' rx='14' fill='url(%23g)'/>"
+    "<text x='32' y='46' font-size='36' font-weight='700' text-anchor='middle'"
+    " font-family='PingFang SC,Microsoft YaHei,sans-serif' fill='#ffffff'>好</text>"
+    "</svg>"
+)
+
+HEAD_EXTRA = (
+    '    <link rel="icon" href="data:image/svg+xml,'
+    + urllib.parse.quote(FAVICON_SVG, safe="")
+    + '">\n'
+    '    <meta name="theme-color" content="#0f172a">\n'
+    '    <meta name="description" content="好人之家 · AI 视觉作品画廊，支持按作品名检索与系列筛选。">\n'
+)
+
 BETA_BANNER = (
     '<div class="beta-banner">\n'
     '        🧪 <strong>预览版</strong> · 缩略图 + 系列标签已开启 · 正式版首页未受影响 '
@@ -776,6 +797,7 @@ PAGE_TEMPLATE = (
     '<head>\n'
     '    <meta charset="UTF-8">\n'
     '    <meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
+    '__HEAD_EXTRA__'
     '__ROBOTS__'
     '    <title>__PAGE_TITLE__</title>\n'
     '    <style>' + CSS + '</style>\n'
@@ -924,6 +946,7 @@ def render_page(images_data, asset_base="", beta=False, with_chips=True,
     page = page.replace('__CHIPS__', chips_html)
     page = page.replace('__CHIP_TOGGLE__', toggle_html)
     page = page.replace('__BANNER__', banner_html)
+    page = page.replace('__HEAD_EXTRA__', HEAD_EXTRA)
     page = page.replace('__ROBOTS__', robots_html)
     page = page.replace('__PAGE_TITLE__', html.escape(page_title))
     page = page.replace('__CARDS__', cards)

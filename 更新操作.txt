@@ -1,10 +1,127 @@
-# 1. 自动扫描所有修改（会自动忽略 raw_photos 等大图）
-git add .
-# 2. 提交修改，并写上你的更新说明（双引号里的内容可以随便改）
-git commit -m "更新：添加了3张新摄影作品，并优化了排版"
-# 3. 推送到 GitHub
-git push origin main
+========================================================
+ haorenyige.top 日常更新操作
+ 本文件 2026-10-04 重写。旧版开头那句
+ "会自动忽略 raw_photos 等大图" 当时是错的（项目里没有
+ .gitignore），现在才真的成立，故一并更正。
+========================================================
 
-git add .
-git commit -m "更新"
-git push origin main
+
+【加图上线：四步】
+
+第 1 步  把新图放进 raw_photos\
+         文件名 = 作品名，例如  纱夜 (12).png
+         支持 .png / .jpg / .jpeg / .webp
+         同名文件不要重复
+
+第 2 步  打开命令行，逐行复制粘贴：
+
+            cd /d D:\website\MyGallery
+
+            C:\Users\cqc\.workbuddy\binaries\python\envs\default\Scripts\python.exe build_gallery_v3.py
+
+         这一步会自动完成：
+             · 压缩新图为 site\images\*.webp       （灯箱大图）
+             · 生成缩略图 site\thumbs\*.webp        （列表页只加载这个）
+             · 复制原图到 site\originals\           （下载按钮给的就是它）
+             · 重新生成 site\index.html
+
+第 3 步  提交并上线：
+
+            git add .
+            git commit -m "更新：新增 N 张作品"
+            git push origin main
+
+         推送后 Cloudflare 自动部署，约 1~2 分钟生效。
+
+第 4 步  刷新 https://haorenyige.top 确认
+
+
+--------------------------------------------------------
+ 必须知道的几件事
+--------------------------------------------------------
+
+[1] raw_photos\ 现在已被 .gitignore 忽略，不再进版本库。
+    所以 git add . 是安全的，不会再误把 768 MB 素材推上去。
+    它的内容与 site\originals\ 逐字节一致（320/320 同源），
+    仓库里已有完整备份，删了也能恢复。
+
+[2] 缩略图全自动生成，不用管。
+    列表页用 560px 缩略图（平均 36 KB），点开才加载原始大图
+    （平均 151 KB）。整页载荷因此降了约 76%。
+
+[3] 下载按钮给的始终是 site\originals\ 里的 PNG 原图，
+    没有做任何重编码，和以前一样。
+
+[4] 作品名会自动分成系列标签：
+        「僵尸 (1)」「僵尸 (2)」   ->  系列「僵尸」
+        「shaye__02392_」          ->  系列「shaye」
+        「酒吞_00389_」            ->  系列「酒吞」
+        「外冷内？2」              ->  系列「外冷内？」
+        裸名（如「滑板.png」）      ->  独立单张，不进标签栏
+    同一系列满 2 张才会出现在标签栏。所以取名尽量一致：
+    现在「外卖打翻2」和「打翻外卖1/3/4/5/6/7」被当成了两个
+    系列，前者落单没有标签——改个名就能合并。
+
+[5] git push 如果卡住很久不出声：
+    本机的凭据助手在非交互环境取不到账号，属于已知问题，
+    换下面这行即可（不改动你的任何配置）：
+
+        git -c credential.helper= -c credential.helper=wincred push origin main
+
+
+--------------------------------------------------------
+ 想先预览、不上线
+--------------------------------------------------------
+
+生成一个预览子站，正式首页完全不动，两者并存：
+
+    ...\python.exe build_gallery_v3.py --out site\beta\index.html --beta
+
+然后照常 add / commit / push，访问：
+
+    https://haorenyige.top/beta/
+
+--beta 会自动改用根路径资源、加 noindex（不被搜索引擎收录）、
+并在顶部加一条返回正式版的链接。看满意了再执行：
+
+    ...\python.exe build_gallery_v3.py        （生成到正式首页）
+    git rm -r --cached site\beta              （下线预览）
+
+
+--------------------------------------------------------
+ 排错
+--------------------------------------------------------
+
+· 先确认 Python 环境在：
+
+    C:\Users\cqc\.workbuddy\binaries\python\envs\default\Scripts\python.exe --version
+
+  这个环境装了 Pillow 12.3.0。系统的 python 没装，别用。
+
+· 构建脚本其他参数：
+
+    --no-thumbs      不生成缩略图
+    --no-chips       不生成系列标签
+    --out <路径>      指定输出文件
+    --asset-base <前缀>  资源路径前缀，如 /
+
+
+--------------------------------------------------------
+ 仓库现状（2026-10-04）
+--------------------------------------------------------
+
+  站点   site\images      48 MB   灯箱大图（webp）
+         site\thumbs      12 MB   列表缩略图（webp）
+         site\originals  768 MB   下载用原图（png，未重编码）
+         site\index.html         320 张作品 / 67 个系列标签
+
+  仓库   .git  818 MB
+         其中约 767 MB 是 originals 原图，下载功能依赖它，
+         暂不精简。（曾评估：重编码为 WebP 可压到约 82 MB，
+         但那样下载的就不是无损原图了，已决定保持原图。）
+
+  素材   raw_photos\  768 MB  仅存本机，已不纳入版本库
+
+  构建   build_gallery_v3.py   旧版 v2 / generate_index.py 已弃用
+  归档   _legacy\              旧版 app.js / style.css / images.json
+                               （v3 页面自包含，不再引用）
