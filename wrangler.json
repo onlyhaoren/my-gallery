@@ -1,7 +1,15 @@
 {
   "name": "my-gallery",
-  "compatibility_date": "2024-03-01",
+  "main": "./worker.js",
+  "compatibility_date": "2024-09-19",
   "assets": {
-    "directory": "./site"
-  }
+    "directory": "./site",
+    "binding": "ASSETS"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "STATS",
+      "id": "600e07f59b1b445cb88d1adb5692ae48"
+    }
+  ]
 }

@@ -4559,5 +4559,45 @@ header h1 {
     applyFilter();
 }());
 </script>
+    <script>
+(function () {
+    'use strict';
+    var EP = '/api/track';
+
+    function send(obj) {
+        try {
+            var body = JSON.stringify(obj);
+            if (navigator.sendBeacon) {
+                navigator.sendBeacon(EP, new Blob([body], { type: 'application/json' }));
+            } else {
+                fetch(EP, { method: 'POST', body: body, keepalive: true,
+                            headers: { 'Content-Type': 'application/json' } });
+            }
+        } catch (e) { /* 统计失败绝不能影响页面 */ }
+    }
+
+    // 访问量：每次加载页面记一次
+    send({ e: 'view' });
+
+    // 下载点击：卡片里的「下载原图」按钮，以及灯箱里的下载链接
+    document.addEventListener('click', function (ev) {
+        var node = ev.target;
+        while (node && node !== document &&
+               !(node.tagName === 'A' &&
+                 (node.classList.contains('download-btn') || node.id === 'lb-download'))) {
+            node = node.parentNode;
+        }
+        if (!node || node === document) { return; }
+
+        var card = node.closest ? node.closest('.card') : null;
+        var work = card ? (card.getAttribute('data-title') || '') : '';
+        if (!work) {
+            var t = document.getElementById('lb-title');
+            work = t ? t.textContent : '';
+        }
+        send({ e: 'download', w: work });
+    }, true);
+}());
+</script>
 </body>
 </html>
