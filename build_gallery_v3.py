@@ -3,34 +3,54 @@
 """
 build_gallery_v3.py
 
-流程：扫描 raw_photos/ → 压缩为 site/images/*.webp + 复制原图到 site/originals/ → 生成 site/index.html
+流程：扫描 raw_photos/ → 压缩为 site/images/*.webp + 生成 site/thumbs/*.webp 方形缩略图
+      + 复制原图到 site/originals/ → 生成 site/index.html
 
 页面功能：
   - 自带检索（按作品名过滤，忽略空格与标点，自动高亮命中片段）
+  - 系列标签 chip 筛选（从文件名自动推导，可多选，与检索叠加生效）
+  - 缩略图 + 真懒加载（列表只加载 560px 缩略图，点开才取大图）
   - 结果计数 / 无结果提示 / 一键清除
   - 最新优先 · 最早优先 排序
   - 灯箱预览：左右切换、Esc 关闭、手机滑动、直接下载原图
   - 键盘：/ 聚焦搜索，← → 翻页
+
+常用命令：
+  python build_gallery_v3.py                                  # 正式版 → site/index.html
+  python build_gallery_v3.py --out site/beta/index.html --beta # 预览版 → /beta/，不动线上首页
 """
 
 import os
 import re
 import html
 import shutil
+import argparse
 import datetime
+from collections import Counter
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 # ---------------------------------------------------------------- 路径配置
 RAW_DIR = "./raw_photos"
 SITE_DIR = "./site"
 IMAGES_DIR = "./site/images"
+THUMBS_DIR = "./site/thumbs"
 ORIGINALS_DIR = "./site/originals"
 
 SUPPORTED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
-WEBP_QUALITY = 80
 
-for _folder in (RAW_DIR, SITE_DIR, IMAGES_DIR, ORIGINALS_DIR):
+WEBP_QUALITY = 80        # 大图（灯箱用）
+THUMB_SIZE = 560         # 缩略图边长（正方形中心裁切）
+THUMB_QUALITY = 72       # 缩略图画质
+MIN_CHIP_COUNT = 2       # 至少几张才配变成系列标签
+CHIP_COLLAPSE_AT = 20    # chip 超过这个数量就默认折叠
+
+try:
+    RESAMPLE = Image.Resampling.LANCZOS
+except AttributeError:      # Pillow < 9.1
+    RESAMPLE = Image.LANCZOS
+
+for _folder in (RAW_DIR, SITE_DIR, IMAGES_DIR, THUMBS_DIR, ORIGINALS_DIR):
     os.makedirs(_folder, exist_ok=True)
 
 
@@ -39,11 +59,44 @@ def norm_key(text):
     return re.sub(r"[\s_\-—·,，。.()（）\[\]【】]", "", text).lower()
 
 
+# ---------------------------------------------------------------- 系列名推导
+# 依次尝试，命中即返回。想调分组规则改这里就行。
+SERIES_PATTERNS = [
+    re.compile(r"^(?P<n>.+?)\s*[（(]\s*\d+\s*[)）]\s*$"),   # 旗袍 (3) / 旗袍（3）
+    re.compile(r"^(?P<n>.+?)__\d+_$"),                       # qingchuan__01145_
+    re.compile(r"^(?P<n>.+?)_\d+_$"),                        # 酒吞_00389_
+    re.compile(r"^(?P<n>[^\d]+?)\s*\d+$"),                   # 外冷内？2 / 打翻外卖1
+]
+
+
+def series_of(title):
+    """从作品名推导所属系列；推不出来就返回自己（即独立单张）。"""
+    name = title.strip()
+    # 「大与小 (1)_副本」这类先剥掉副本后缀
+    name = re.sub(r"[_\-]?\s*副本\s*$", "", name).strip() or name
+    for pat in SERIES_PATTERNS:
+        m = pat.match(name)
+        if m:
+            got = m.group("n").strip(" _-—·")
+            if got:
+                return got
+    return name
+
+
 # ---------------------------------------------------------------- 1. 处理图片
-def scan_and_process():
+def make_thumb(src_path, dst_path):
+    """生成正方形中心裁切缩略图——与卡片 1:1 裁切显示效果一致，但体积小得多。"""
+    with Image.open(src_path) as im:
+        im = ImageOps.exif_transpose(im)
+        im = ImageOps.fit(im, (THUMB_SIZE, THUMB_SIZE), RESAMPLE)
+        im.save(dst_path, "WEBP", quality=THUMB_QUALITY, method=5)
+
+
+def scan_and_process(want_thumbs=True):
     images_data = []
     new_count = 0
     skip_count = 0
+    fail_count = 0
 
     print("开始扫描图片...")
 
@@ -56,29 +109,40 @@ def scan_and_process():
         mtime = os.path.getmtime(raw_path)
         date_str = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d")
 
-        webp_filename = base_name + ".webp"
-        webp_path = os.path.join(IMAGES_DIR, webp_filename)
+        webp_path = os.path.join(IMAGES_DIR, base_name + ".webp")
+        thumb_path = os.path.join(THUMBS_DIR, base_name + ".webp")
         original_dest_path = os.path.join(ORIGINALS_DIR, filename)
 
-        # 已经处理过（压缩图与原图都在）就跳过
-        if os.path.exists(webp_path) and os.path.exists(original_dest_path):
+        need_thumb = want_thumbs and not os.path.exists(thumb_path)
+        all_ready = (os.path.exists(webp_path)
+                     and os.path.exists(original_dest_path)
+                     and not need_thumb)
+
+        if all_ready:
             skip_count += 1
         else:
             try:
-                with Image.open(raw_path) as img:
-                    img.save(webp_path, "WEBP", quality=WEBP_QUALITY)
+                if not os.path.exists(webp_path):
+                    with Image.open(raw_path) as img:
+                        img.save(webp_path, "WEBP", quality=WEBP_QUALITY)
+                if not os.path.exists(original_dest_path):
+                    shutil.copy2(raw_path, original_dest_path)
+                if need_thumb:
+                    make_thumb(raw_path, thumb_path)
             except Exception as e:
-                print("❌ 压缩失败 {}: {}".format(filename, e))
+                print("❌ 处理失败 {}: {}".format(filename, e))
+                fail_count += 1
                 continue
 
-            shutil.copy2(raw_path, original_dest_path)
             print(" ✨ 成功处理新图片: {}".format(filename))
             new_count += 1
 
         images_data.append({
-            "webp": "images/" + webp_filename,
+            "webp": "images/" + base_name + ".webp",
+            "thumb": "thumbs/" + base_name + ".webp",
             "original": "originals/" + filename,
             "title": base_name,
+            "series": series_of(base_name),
             "mtime": mtime,
             "date": date_str,
             "key": norm_key(base_name),
@@ -87,7 +151,8 @@ def scan_and_process():
     # 默认最新在前
     images_data.sort(key=lambda x: x["mtime"], reverse=True)
 
-    print("扫描完毕！本次共跳过已存在图片 {} 张，成功处理新图片 {} 张。".format(skip_count, new_count))
+    print("扫描完毕！跳过已存在 {} 张，成功处理新图片 {} 张，失败 {} 张。".format(
+        skip_count, new_count, fail_count))
     return images_data
 
 
@@ -135,6 +200,22 @@ header h1 {
 }
 
 .my-intro p { margin-bottom: 6px; }
+
+/* ---------------- 预览版提示条 ---------------- */
+.beta-banner {
+    max-width: 1400px;
+    margin: 0 auto 22px auto;
+    padding: 12px 18px;
+    border: 1px solid var(--accent-color);
+    border-radius: 12px;
+    background: rgba(59, 130, 246, 0.12);
+    color: #bfdbfe;
+    font-size: 0.9rem;
+    text-align: center;
+    line-height: 1.7;
+}
+
+.beta-banner a { color: #fff; text-decoration: underline; }
 
 /* ---------------- 工具条：搜索 + 排序 ---------------- */
 .toolbar {
@@ -208,6 +289,59 @@ header h1 {
     background-color: var(--accent-color);
     box-shadow: 0 0 10px rgba(59, 130, 246, 0.5);
 }
+
+/* ---------------- 系列标签 ---------------- */
+.chip-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+    max-width: 1180px;
+    margin: 0 auto 8px auto;
+}
+
+.chip-bar.collapsed { max-height: 76px; overflow: hidden; }
+.chip-bar.collapsed.expanded { max-height: none; }
+
+.chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--card-bg);
+    color: var(--text-color);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 6px 13px;
+    font-size: 0.84rem;
+    font-family: inherit;
+    cursor: pointer;
+    transition: background-color 0.18s ease, border-color 0.18s ease;
+}
+
+.chip:hover { border-color: var(--accent-color); }
+
+.chip.active {
+    background: var(--accent-color);
+    border-color: var(--accent-color);
+    box-shadow: 0 0 10px rgba(59, 130, 246, 0.45);
+}
+
+.chip .n { color: var(--text-muted); font-size: 0.76rem; }
+.chip.active .n { color: #dbeafe; }
+
+.chip-toggle-wrap { text-align: center; margin-bottom: 10px; }
+
+.chip-toggle {
+    background: none;
+    border: none;
+    color: var(--accent-color);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.84rem;
+    padding: 4px 10px;
+}
+
+.chip-toggle:hover { text-decoration: underline; }
 
 .status-row {
     text-align: center;
@@ -403,6 +537,7 @@ header h1 {
     body { padding: 26px 12px 50px; }
     header h1 { font-size: 1.9rem; }
     .gallery-grid { gap: 14px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+    .chip { padding: 5px 11px; font-size: 0.8rem; }
     .lb-prev { left: 8px; }
     .lb-next { right: 8px; }
     .lb-prev, .lb-next { width: 38px; height: 38px; font-size: 1.25rem; }
@@ -421,6 +556,8 @@ JS = r"""
     var clearBtn = document.getElementById('clear-search');
     var countEl = document.getElementById('result-count');
     var emptyEl = document.getElementById('empty-state');
+    var chipBar = document.getElementById('chip-bar');
+    var chipToggle = document.getElementById('chip-toggle');
     var lightbox = document.getElementById('lightbox');
     var lbImg = document.getElementById('lightbox-img');
     var lbTitle = document.getElementById('lb-title');
@@ -428,6 +565,7 @@ JS = r"""
     var lbDownload = document.getElementById('lb-download');
 
     var lbIndex = -1;
+    var selectedSeries = [];
 
     function norm(s) {
         return (s || '').toLowerCase().replace(/[\s_\-—·,，。.()（）\[\]【】]/g, '');
@@ -467,18 +605,35 @@ JS = r"""
 
         cards.forEach(function (card) {
             var key = card.getAttribute('data-key') || '';
-            var hit = !q || key.indexOf(q) !== -1;
+            var ser = card.getAttribute('data-series') || '';
+
+            var bySearch = !q || key.indexOf(q) !== -1;
+            var byChip = selectedSeries.length === 0 || selectedSeries.indexOf(ser) !== -1;
+            var hit = bySearch && byChip;
+
             card.style.display = hit ? '' : 'none';
             if (hit) { hits += 1; }
             paintTitle(card, rawQuery);
         });
 
-        countEl.textContent = q
+        var filtering = q.length > 0 || selectedSeries.length > 0;
+        countEl.textContent = filtering
             ? '找到 ' + hits + ' 张 / 共 ' + cards.length + ' 张'
             : '共 ' + cards.length + ' 张作品';
 
         emptyEl.classList.toggle('show', hits === 0);
         clearBtn.classList.toggle('show', rawQuery.length > 0);
+    }
+
+    function paintChips() {
+        if (!chipBar) { return; }
+        var chips = chipBar.querySelectorAll('.chip');
+        Array.prototype.forEach.call(chips, function (b) {
+            var s = b.getAttribute('data-series');
+            var active = (s === '') ? selectedSeries.length === 0
+                                    : selectedSeries.indexOf(s) !== -1;
+            b.classList.toggle('active', active);
+        });
     }
 
     function renderLightbox() {
@@ -542,6 +697,34 @@ JS = r"""
         searchInput.focus();
     });
 
+    if (chipBar) {
+        chipBar.addEventListener('click', function (e) {
+            var node = e.target;
+            while (node && node !== chipBar && !node.classList.contains('chip')) {
+                node = node.parentNode;
+            }
+            if (!node || node === chipBar) { return; }
+
+            var s = node.getAttribute('data-series');
+            if (!s) {
+                selectedSeries = [];
+            } else {
+                var i = selectedSeries.indexOf(s);
+                if (i === -1) { selectedSeries.push(s); }
+                else { selectedSeries.splice(i, 1); }
+            }
+            paintChips();
+            applyFilter();
+        });
+    }
+
+    if (chipToggle) {
+        chipToggle.addEventListener('click', function () {
+            var expanded = chipBar.classList.toggle('expanded');
+            chipToggle.textContent = expanded ? '▴ 收起标签' : '▾ 展开全部标签';
+        });
+    }
+
     document.addEventListener('keydown', function (e) {
         if (lightbox.classList.contains('open')) {
             if (e.key === 'Escape') { window.closeLightbox(); }
@@ -567,6 +750,7 @@ JS = r"""
         if (Math.abs(delta) > 50) { window.navigate(delta > 0 ? -1 : 1); }
     }, { passive: true });
 
+    paintChips();
     applyFilter();
 }());
 """
@@ -579,17 +763,26 @@ DOWNLOAD_ICON = (
     '<line x1="12" y1="15" x2="12" y2="3"></line></svg>'
 )
 
+BETA_BANNER = (
+    '<div class="beta-banner">\n'
+    '        🧪 <strong>预览版</strong> · 缩略图 + 系列标签已开启 · 正式版首页未受影响 '
+    '· <a href="/">返回线上版</a>\n'
+    '    </div>'
+)
+
 PAGE_TEMPLATE = (
     '<!DOCTYPE html>\n'
     '<html lang="zh-CN">\n'
     '<head>\n'
     '    <meta charset="UTF-8">\n'
     '    <meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
-    '    <title>haorenyige.top - 我的 AI 视觉工坊</title>\n'
+    '__ROBOTS__'
+    '    <title>__PAGE_TITLE__</title>\n'
     '    <style>' + CSS + '</style>\n'
     '</head>\n'
     '<body>\n'
     '\n'
+    '__BANNER__'
     '    <header>\n'
     '        <h1>好人之家</h1>\n'
     '        <div class="my-intro">\n'
@@ -612,13 +805,18 @@ PAGE_TEMPLATE = (
     '        </div>\n'
     '    </div>\n'
     '\n'
+    '    <div class="chip-bar" id="chip-bar">\n'
+    '__CHIPS__\n'
+    '    </div>\n'
+    '__CHIP_TOGGLE__'
+    '\n'
     '    <div class="status-row"><span id="result-count">共 __TOTAL__ 张作品</span></div>\n'
     '\n'
     '    <div class="gallery-grid" id="gallery-grid">\n'
     '__CARDS__\n'
     '    </div>\n'
     '\n'
-    '    <div id="empty-state" class="empty-state">没有找到匹配的作品，换个关键词试试？</div>\n'
+    '    <div id="empty-state" class="empty-state">没有找到匹配的作品，换个关键词或清掉筛选试试？</div>\n'
     '\n'
     '    <div id="lightbox" class="lightbox"\n'
     '         onclick="if (event.target === this || event.target.id === \'lightbox-img\') closeLightbox()">\n'
@@ -640,15 +838,17 @@ PAGE_TEMPLATE = (
 
 
 # ---------------------------------------------------------------- 4. 渲染页面
-def render_card(img):
+def render_card(img, asset_base=""):
     title = html.escape(img["title"], quote=True)
     key = html.escape(img["key"], quote=True)
+    series = html.escape(img["series"], quote=True)
 
     return (
         '        <div class="card" data-time="{time}" data-key="{key}" data-title="{title}"'
-        ' data-webp="{webp}" data-orig="{orig}">\n'
+        ' data-series="{series}" data-webp="{webp}" data-orig="{orig}">\n'
         '            <div class="img-container" onclick="openLightbox(this)">\n'
-        '                <img src="{webp}" alt="{title}" loading="lazy">\n'
+        '                <img src="{thumb}" alt="{title}" width="{size}" height="{size}"'
+        ' loading="lazy" decoding="async">\n'
         '            </div>\n'
         '            <div class="card-info">\n'
         '                <div class="card-title-row">\n'
@@ -662,30 +862,122 @@ def render_card(img):
         time=img["mtime"],
         key=key,
         title=title,
-        webp=img["webp"],
-        orig=img["original"],
+        series=series,
+        webp=asset_base + img["webp"],
+        thumb=asset_base + img["thumb"],
+        orig=asset_base + img["original"],
         date=img["date"],
+        size=THUMB_SIZE,
         icon=DOWNLOAD_ICON,
     )
 
 
-def render_page(images_data):
-    cards = "".join(render_card(img) for img in images_data)
-    return (
-        PAGE_TEMPLATE
-        .replace("__CARDS__", cards)
-        .replace("__TOTAL__", str(len(images_data)))
-    )
+def build_chips(images_data):
+    """统计系列，返回 [(系列名, 数量), ...]，按数量降序。"""
+    counter = Counter(img["series"] for img in images_data)
+    items = [(name, n) for name, n in counter.items() if n >= MIN_CHIP_COUNT]
+    items.sort(key=lambda x: (-x[1], x[0]))
+    return items
+
+
+def render_chips(images_data):
+    items = build_chips(images_data)
+    parts = [
+        '        <button type="button" class="chip active" data-series="">'
+        '全部<span class="n">{}</span></button>'.format(len(images_data))
+    ]
+    for name, n in items:
+        parts.append(
+            '        <button type="button" class="chip" data-series="{s}">{s}'
+            '<span class="n">{n}</span></button>'.format(
+                s=html.escape(name, quote=True), n=n)
+        )
+    collapsed = len(items) > CHIP_COLLAPSE_AT
+    return "\n".join(parts), collapsed, len(items)
+
+
+def render_page(images_data, asset_base="", beta=False, with_chips=True,
+                page_title="haorenyige.top - 我的 AI 视觉工坊"):
+    cards = "".join(render_card(img, asset_base) for img in images_data)
+
+    if with_chips:
+        chips_html, collapsed, _n = render_chips(images_data)
+        chip_bar_open = ('    <div class="chip-bar collapsed" id="chip-bar">'
+                         if collapsed else '    <div class="chip-bar" id="chip-bar">')
+        toggle_html = (
+            '    <div class="chip-toggle-wrap">'
+            '<button type="button" class="chip-toggle" id="chip-toggle">'
+            '▾ 展开全部标签</button></div>\n'
+        ) if collapsed else ''
+    else:
+        chips_html = ''
+        chip_bar_open = '    <div class="chip-bar" id="chip-bar">'
+        toggle_html = ''
+
+    banner_html = ('    ' + BETA_BANNER + '\n') if beta else ''
+    robots_html = ('    <meta name="robots" content="noindex, nofollow">\n'
+                   if beta else '')
+
+    page = PAGE_TEMPLATE
+    # 先换 chip 容器（因为 __CHIP_TOGGLE__ 里含 'chip-toggle' 字样，注意替换顺序）
+    page = page.replace('    <div class="chip-bar" id="chip-bar">', chip_bar_open)
+    page = page.replace('__CHIPS__', chips_html)
+    page = page.replace('__CHIP_TOGGLE__', toggle_html)
+    page = page.replace('__BANNER__', banner_html)
+    page = page.replace('__ROBOTS__', robots_html)
+    page = page.replace('__PAGE_TITLE__', html.escape(page_title))
+    page = page.replace('__CARDS__', cards)
+    page = page.replace('__TOTAL__', str(len(images_data)))
+    return page
+
+
+# ---------------------------------------------------------------- 5. 命令行
+def parse_args():
+    ap = argparse.ArgumentParser(description="构建图片画廊站点")
+    ap.add_argument("--out", default=os.path.join(SITE_DIR, "index.html"),
+                    help="输出 HTML 路径（默认 site/index.html）")
+    ap.add_argument("--asset-base", default=None,
+                    help="资源路径前缀，例如 / （放在子目录里预览时必须指定）")
+    ap.add_argument("--beta", action="store_true",
+                    help="预览版：自动改用根绝对路径、加提示条、加 noindex")
+    ap.add_argument("--title", default="haorenyige.top - 我的 AI 视觉工坊")
+    ap.add_argument("--no-thumbs", action="store_true", help="不生成缩略图")
+    ap.add_argument("--no-chips", action="store_true", help="不生成系列标签")
+    return ap.parse_args()
 
 
 def main():
-    images_data = scan_and_process()
+    args = parse_args()
 
-    out_path = os.path.join(SITE_DIR, "index.html")
+    asset_base = args.asset_base
+    if args.beta and asset_base is None:
+        asset_base = "/"
+    if asset_base is None:
+        asset_base = ""
+    if asset_base and not asset_base.endswith("/"):
+        asset_base += "/"
+
+    title = args.title
+    if args.beta and "预览" not in title:
+        title = title + "（预览版）"
+
+    images_data = scan_and_process(want_thumbs=not args.no_thumbs)
+
+    out_path = args.out
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
-        f.write(render_page(images_data))
+        f.write(render_page(
+            images_data,
+            asset_base=asset_base,
+            beta=args.beta,
+            with_chips=not args.no_chips,
+            page_title=title,
+        ))
 
-    print("恭喜！网页重新生成成功。当前网页共展示了 {} 张作品。".format(len(images_data)))
+    chips = build_chips(images_data)
+    print("恭喜！网页重新生成成功 → {}".format(out_path))
+    print("  作品 {} 张 · 系列标签 {} 个 · 资源前缀 '{}'".format(
+        len(images_data), len(chips), asset_base or "(相对路径)"))
 
 
 if __name__ == "__main__":
