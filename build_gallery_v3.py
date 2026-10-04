@@ -10,6 +10,8 @@ build_gallery_v3.py
   - 自带检索（按作品名过滤，忽略空格与标点，自动高亮命中片段）
   - 系列标签 chip 筛选（从文件名自动推导，可多选，与检索叠加生效）
   - 缩略图 + 真懒加载（列表只加载 560px 缩略图，点开才取大图）
+  - 访问统计埋点：页面加载记 1 次访问，点「下载原图」记 1 次下载
+    （上报接口见 worker.js，取数用 stats/pull_stats.py）
   - 结果计数 / 无结果提示 / 一键清除
   - 最新优先 · 最早优先 排序
   - 灯箱预览：左右切换、Esc 关闭、手机滑动、直接下载原图
@@ -756,6 +758,51 @@ JS = r"""
 }());
 """
 
+# ---------------------------------------------------------------- 3b. 访问统计埋点
+# 只在 --no-track / --beta 之外注入。上报接口由 worker.js 提供：
+#   /api/track   写入事件（只能写，读不到任何东西）
+# 拿数据请在本地跑 stats/pull_stats.py
+TRACK_JS = r"""
+(function () {
+    'use strict';
+    var EP = '/api/track';
+
+    function send(obj) {
+        try {
+            var body = JSON.stringify(obj);
+            if (navigator.sendBeacon) {
+                navigator.sendBeacon(EP, new Blob([body], { type: 'application/json' }));
+            } else {
+                fetch(EP, { method: 'POST', body: body, keepalive: true,
+                            headers: { 'Content-Type': 'application/json' } });
+            }
+        } catch (e) { /* 统计失败绝不能影响页面 */ }
+    }
+
+    // 访问量：每次加载页面记一次
+    send({ e: 'view' });
+
+    // 下载点击：卡片里的「下载原图」按钮，以及灯箱里的下载链接
+    document.addEventListener('click', function (ev) {
+        var node = ev.target;
+        while (node && node !== document &&
+               !(node.tagName === 'A' &&
+                 (node.classList.contains('download-btn') || node.id === 'lb-download'))) {
+            node = node.parentNode;
+        }
+        if (!node || node === document) { return; }
+
+        var card = node.closest ? node.closest('.card') : null;
+        var work = card ? (card.getAttribute('data-title') || '') : '';
+        if (!work) {
+            var t = document.getElementById('lb-title');
+            work = t ? t.textContent : '';
+        }
+        send({ e: 'download', w: work });
+    }, true);
+}());
+"""
+
 DOWNLOAD_ICON = (
     '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
     'stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
@@ -854,6 +901,7 @@ PAGE_TEMPLATE = (
     '    </div>\n'
     '\n'
     '    <script>' + JS + '</script>\n'
+    '__TRACK__'
     '</body>\n'
     '</html>\n'
 )
@@ -919,6 +967,7 @@ def render_chips(images_data):
 
 
 def render_page(images_data, asset_base="", beta=False, with_chips=True,
+                with_track=True,
                 page_title="haorenyige.top - 我的 AI 视觉工坊"):
     cards = "".join(render_card(img, asset_base) for img in images_data)
 
@@ -939,6 +988,7 @@ def render_page(images_data, asset_base="", beta=False, with_chips=True,
     banner_html = ('    ' + BETA_BANNER + '\n') if beta else ''
     robots_html = ('    <meta name="robots" content="noindex, nofollow">\n'
                    if beta else '')
+    track_html = ('    <script>' + TRACK_JS + '</script>\n') if with_track else ''
 
     page = PAGE_TEMPLATE
     # 先换 chip 容器（因为 __CHIP_TOGGLE__ 里含 'chip-toggle' 字样，注意替换顺序）
@@ -948,6 +998,7 @@ def render_page(images_data, asset_base="", beta=False, with_chips=True,
     page = page.replace('__BANNER__', banner_html)
     page = page.replace('__HEAD_EXTRA__', HEAD_EXTRA)
     page = page.replace('__ROBOTS__', robots_html)
+    page = page.replace('__TRACK__', track_html)
     page = page.replace('__PAGE_TITLE__', html.escape(page_title))
     page = page.replace('__CARDS__', cards)
     page = page.replace('__TOTAL__', str(len(images_data)))
@@ -966,6 +1017,7 @@ def parse_args():
     ap.add_argument("--title", default="haorenyige.top - 我的 AI 视觉工坊")
     ap.add_argument("--no-thumbs", action="store_true", help="不生成缩略图")
     ap.add_argument("--no-chips", action="store_true", help="不生成系列标签")
+    ap.add_argument("--no-track", action="store_true", help="不注入访问统计埋点")
     return ap.parse_args()
 
 
@@ -986,6 +1038,9 @@ def main():
 
     images_data = scan_and_process(want_thumbs=not args.no_thumbs)
 
+    # 预览版默认不埋点，免得把预览的访问混进真实统计里
+    with_track = (not args.no_track) and (not args.beta)
+
     out_path = args.out
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
@@ -994,13 +1049,15 @@ def main():
             asset_base=asset_base,
             beta=args.beta,
             with_chips=not args.no_chips,
+            with_track=with_track,
             page_title=title,
         ))
 
     chips = build_chips(images_data)
     print("恭喜！网页重新生成成功 → {}".format(out_path))
-    print("  作品 {} 张 · 系列标签 {} 个 · 资源前缀 '{}'".format(
-        len(images_data), len(chips), asset_base or "(相对路径)"))
+    print("  作品 {} 张 · 系列标签 {} 个 · 资源前缀 '{}' · 访问统计 {}".format(
+        len(images_data), len(chips), asset_base or "(相对路径)",
+        "已注入" if with_track else "未注入"))
 
 
 if __name__ == "__main__":
